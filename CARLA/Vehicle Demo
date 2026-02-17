@@ -1,0 +1,80 @@
+import carla
+import time
+import random
+import math
+
+def main():
+
+    # Connect to CARLA server
+    client = carla.Client("localhost", 2000)
+    client.set_timeout(10.0)
+
+    world = client.get_world()
+    blueprint_library = world.get_blueprint_library()
+
+    # Choose Tesla model (reliable vehicle)
+    vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
+
+    spawn_points = world.get_map().get_spawn_points()
+    random.shuffle(spawn_points)
+
+    vehicle = None
+
+    # Try multiple spawn points (avoid collision errors)
+    for sp in spawn_points[:30]:
+        vehicle = world.try_spawn_actor(vehicle_bp, sp)
+        if vehicle:
+            break
+
+    if vehicle is None:
+        print("ERROR: Could not spawn vehicle. Try stopping traffic or reloading map.")
+        return
+
+    # Enable autopilot
+    vehicle.set_autopilot(True)
+    print("✅ Vehicle spawned and autopilot enabled.")
+
+    spectator = world.get_spectator()
+
+    try:
+        while True:
+            transform = vehicle.get_transform()
+            location = transform.location
+            rotation = transform.rotation
+
+            # Convert yaw to radians
+            yaw = math.radians(rotation.yaw)
+
+            # Camera position (behind and above vehicle)
+            back_x = -8.0 * math.cos(yaw)
+            back_y = -8.0 * math.sin(yaw)
+
+            camera_location = location + carla.Location(
+                x=back_x,
+                y=back_y,
+                z=4.0
+            )
+
+            camera_rotation = carla.Rotation(
+                pitch=-15.0,
+                yaw=rotation.yaw,
+                roll=0.0
+            )
+
+            spectator.set_transform(
+                carla.Transform(camera_location, camera_rotation)
+            )
+
+            print(f"Location: x={location.x:.2f}, y={location.y:.2f}, z={location.z:.2f}")
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\nStopping simulation...")
+
+    finally:
+        if vehicle:
+            vehicle.destroy()
+            print("Vehicle destroyed. Done.")
+
+if __name__ == "__main__":
+    main()
