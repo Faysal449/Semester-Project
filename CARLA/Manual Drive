@@ -1,0 +1,94 @@
+import carla
+import time
+import random
+import math
+
+def follow_spectator(world, vehicle):
+    spectator = world.get_spectator()
+    tf = vehicle.get_transform()
+    loc = tf.location
+    rot = tf.rotation
+    yaw = math.radians(rot.yaw)
+
+    cam_loc = loc + carla.Location(
+        x=-8.0 * math.cos(yaw),
+        y=-8.0 * math.sin(yaw),
+        z=4.0
+    )
+    cam_rot = carla.Rotation(pitch=-15.0, yaw=rot.yaw, roll=0.0)
+    spectator.set_transform(carla.Transform(cam_loc, cam_rot))
+
+def main():
+    client = carla.Client("localhost", 2000)
+    client.set_timeout(10.0)
+    world = client.get_world()
+    bp = world.get_blueprint_library()
+
+    # Spawn a vehicle
+    vehicle_bp = bp.find("vehicle.tesla.model3")
+    spawn_points = world.get_map().get_spawn_points()
+    random.shuffle(spawn_points)
+
+    vehicle = None
+    for sp in spawn_points[:50]:
+        vehicle = world.try_spawn_actor(vehicle_bp, sp)
+        if vehicle:
+            break
+
+    if vehicle is None:
+        print("ERROR: Could not spawn vehicle (spawn points blocked). Stop traffic and try again.")
+        return
+
+    print(f"✅ Vehicle spawned id={vehicle.id} at {vehicle.get_location()}")
+    follow_spectator(world, vehicle)
+
+    print("\nCommands:")
+    print("  w = forward")
+    print("  r = reverse")
+    print("  a = steer left")
+    print("  d = steer right")
+    print("  s = brake")
+    print("  x = full stop")
+    print("  q = quit\n")
+
+    try:
+        while True:
+            # Keep camera following the car
+            follow_spectator(world, vehicle)
+
+            cmd = input("Enter command: ").strip().lower()
+
+            if cmd == "w":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.5, steer=0.0, brake=0.0, reverse=False))
+
+            elif cmd == "r":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.5, steer=0.0, brake=0.0, reverse=True))
+
+            elif cmd == "a":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.35, steer=-0.5, brake=0.0, reverse=False))
+
+            elif cmd == "d":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.35, steer=0.5, brake=0.0, reverse=False))
+
+            elif cmd == "s":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0, brake=1.0, reverse=False))
+
+            elif cmd == "x":
+                vehicle.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0, brake=1.0, reverse=False))
+
+            elif cmd == "q":
+                break
+
+            else:
+                print("Unknown command. Use w/r/a/d/s/x/q.")
+
+            # Print current location after each command
+            loc = vehicle.get_location()
+            print(f"Now at: x={loc.x:.1f}, y={loc.y:.1f}, z={loc.z:.1f}")
+
+    finally:
+        vehicle.destroy()
+        print("✅ Vehicle destroyed. Done.")
+
+if __name__ == "__main__":
+    main()
