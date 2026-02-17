@@ -1,0 +1,168 @@
+import carla
+import time
+import random
+import math
+
+# ---------- SETTINGS ----------
+NUM_VEHICLES = 25       
+NUM_WALKERS  = 50      
+FOLLOW_CAMERA = True
+EGO_AUTOPILOT = True
+
+TM_PORT = 8000
+SAFE_DISTANCE = 2.5     # meters
+GLOBAL_SPEED_DIFF = 10  # % slower than speed limit (positive = slower)
+# ----------------------------
+
+def main():
+    client = carla.Client("localhost", 2000)
+    client.set_timeout(15.0)
+
+    world = client.get_world()
+    bp_lib = world.get_blueprint_library()
+
+    # Traffic Manager
+    tm = client.get_trafficmanager(TM_PORT)
+    tm.set_global_distance_to_leading_vehicle(SAFE_DISTANCE)
+    tm.global_percentage_speed_difference(GLOBAL_SPEED_DIFF)
+
+    # Try to make results more deterministic
+    random.seed(42)
+
+    actors_to_destroy = []
+    walker_controllers = []
+
+    # ---------- Spawn EGO vehicle ----------
+    ego_bp = bp_lib.find("vehicle.tesla.model3")
+    if ego_bp.has_attribute("color"):
+        ego_bp.set_attribute("color", random.choice(ego_bp.get_attribute("color").recommended_values))
+
+    spawn_points = world.get_map().get_spawn_points()
+    random.shuffle(spawn_points)
+
+    ego_vehicle = None
+    for sp in spawn_points[:60]:
+        ego_vehicle = world.try_spawn_actor(ego_bp, sp)
+        if ego_vehicle:
+            break
+
+    if ego_vehicle is None:
+        print("ERROR: Could not spawn EGO vehicle. Stop traffic and try again.")
+        return
+
+    actors_to_destroy.append(ego_vehicle)
+
+    if EGO_AUTOPILOT:
+        ego_vehicle.set_autopilot(True, TM_PORT)
+
+    print(f"✅ EGO vehicle spawned id={ego_vehicle.id} | autopilot={EGO_AUTOPILOT}")
+
+    # ---------- Spawn other vehicles ----------
+    vehicle_bps = bp_lib.filter("vehicle.*")
+    random.shuffle(spawn_points)
+
+    spawned = 0
+    for sp in spawn_points:
+        if spawned >= NUM_VEHICLES:
+            break
+
+        bp = random.choice(vehicle_bps)
+
+        # avoid spawning bikes sometimes (optional)
+        # if "bike" in bp.id or "harley" in bp.id:
+        #     continue
+
+        if bp.has_attribute("color"):
+            bp.set_attribute("color", random.choice(bp.get_attribute("color").recommended_values))
+        if bp.has_attribute("driver_id"):
+            bp.set_attribute("driver_id", random.choice(bp.get_attribute("driver_id").recommended_values))
+
+        v = world.try_spawn_actor(bp, sp)
+        if v:
+            v.set_autopilot(True, TM_PORT)
+            actors_to_destroy.append(v)
+            spawned += 1
+
+    print(f"✅ Spawned {spawned} other vehicles")
+
+    # ---------- Spawn walkers (pedestrians) ----------
+    walker_bps = bp_lib.filter("walker.pedestrian.*")
+
+    # Pick random nav locations for walkers
+    walker_spawn_points = []
+    for _ in range(NUM_WALKERS * 3):
+        loc = world.get_random_location_from_navigation()
+        if loc:
+            walker_spawn_points.append(carla.Transform(loc))
+
+    random.shuffle(walker_spawn_points)
+
+    walkers = []
+    for i in range(min(NUM_WALKERS, len(walker_spawn_points))):
+        w_bp = random.choice(walker_bps)
+        w = world.try_spawn_actor(w_bp, walker_spawn_points[i])
+        if w:
+            walkers.append(w)
+            actors_to_destroy.append(w)
+
+    print(f"✅ Spawned {len(walkers)} walkers")
+
+    # Walker controllers (AI)
+    controller_bp = bp_lib.find("controller.ai.walker")
+    for w in walkers:
+        c = world.spawn_actor(controller_bp, carla.Transform(), attach_to=w)
+        walker_controllers.append(c)
+        actors_to_destroy.append(c)
+
+    # Start walkers
+    for c in walker_controllers:
+        c.start()
+        c.set_max_speed(random.uniform(0.9, 1.6))  # m/s ~ slow walk to brisk walk
+        dest = world.get_random_location_from_navigation()
+        if dest:
+            c.go_to_location(dest)
+
+    # ---------- Spectator follow ego ----------
+    spectator = world.get_spectator()
+
+    print("Running... Press Ctrl+C to stop and clean up.")
+    try:
+        while True:
+            if FOLLOW_CAMERA:
+                tf = ego_vehicle.get_transform()
+                loc = tf.location
+                rot = tf.rotation
+                yaw = math.radians(rot.yaw)
+
+                cam_loc = loc + carla.Location(
+                    x=-8.0 * math.cos(yaw),
+                    y=-8.0 * math.sin(yaw),
+                    z=4.0
+                )
+                cam_rot = carla.Rotation(pitch=-15.0, yaw=rot.yaw, roll=0.0)
+                spectator.set_transform(carla.Transform(cam_loc, cam_rot))
+
+            time.sleep(0.05)
+
+    except KeyboardInterrupt:
+        print("\nStopping...")
+
+    finally:
+        # Stop walker controllers gracefully
+        for c in walker_controllers:
+            try:
+                c.stop()
+            except Exception:
+                pass
+
+        # Destroy everything we spawned
+        print(f"Destroying {len(actors_to_destroy)} actors...")
+        for a in actors_to_destroy:
+            try:
+                a.destroy()
+            except Exception:
+                pass
+        print("✅ Clean up done.")
+
+if __name__ == "__main__":
+    main()
