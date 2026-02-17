@@ -1,0 +1,250 @@
+import carla
+import time
+import random
+import math
+import csv
+import os
+from collections import deque
+
+# =======================
+# USER SETTINGS (SAFE)
+# =======================
+DURATION_S = 60                 # run length
+CONTROL_HZ = 10                 # control/log loop rate
+TARGET_SPEED_KMH = 18           # keep low for stability
+CSV_NAME = "sil_lidar_benchmark.csv"
+
+# LiDAR settings (keep light to avoid crashes)
+LIDAR_HZ = 10                   # sensor tick frequency
+LIDAR_CHANNELS = 16
+LIDAR_POINTS_PER_SEC = 60000    # try 30k-100k on laptops
+LIDAR_RANGE_M = 35.0
+
+# Visual follow (very light)
+FOLLOW_CAMERA = True
+# =======================
+
+def speed_kmh(v: carla.Vector3D) -> float:
+    return math.sqrt(v.x*v.x + v.y*v.y + v.z*v.z) * 3.6
+
+def clamp(x, lo, hi):
+    return lo if x < lo else hi if x > hi else x
+
+def follow_spectator(world, vehicle):
+    spectator = world.get_spectator()
+    tf = vehicle.get_transform()
+    loc = tf.location
+    rot = tf.rotation
+    yaw = math.radians(rot.yaw)
+
+    cam_loc = loc + carla.Location(
+        x=-8.0 * math.cos(yaw),
+        y=-8.0 * math.sin(yaw),
+        z=4.0
+    )
+    cam_rot = carla.Rotation(pitch=-15.0, yaw=rot.yaw, roll=0.0)
+    spectator.set_transform(carla.Transform(cam_loc, cam_rot))
+
+def main():
+    client = carla.Client("localhost", 2000)
+    client.set_timeout(15.0)
+
+    world = client.get_world()
+    bp = world.get_blueprint_library()
+
+    actors = []
+
+    # -----------------------
+    # Spawn ego vehicle
+    # -----------------------
+    vehicle_bp = bp.find("vehicle.tesla.model3")
+    if vehicle_bp.has_attribute("color"):
+        vehicle_bp.set_attribute(
+            "color", random.choice(vehicle_bp.get_attribute("color").recommended_values)
+        )
+
+    spawn_points = world.get_map().get_spawn_points()
+    random.shuffle(spawn_points)
+
+    vehicle = None
+    for sp in spawn_points[:60]:
+        vehicle = world.try_spawn_actor(vehicle_bp, sp)
+        if vehicle:
+            break
+    if vehicle is None:
+        print("ERROR: Could not spawn vehicle (spawn points blocked). Stop other scripts/traffic and try again.")
+        return
+
+    actors.append(vehicle)
+    vehicle.set_autopilot(False)
+    print(f"✅ Ego vehicle spawned id={vehicle.id}")
+
+    # Immediately move spectator to the vehicle so you can see it
+    if FOLLOW_CAMERA:
+        follow_spectator(world, vehicle)
+
+    # -----------------------
+    # Attach LiDAR
+    # -----------------------
+    lidar_bp = bp.find("sensor.lidar.ray_cast")
+    lidar_bp.set_attribute("channels", str(LIDAR_CHANNELS))
+    lidar_bp.set_attribute("range", str(LIDAR_RANGE_M))
+    lidar_bp.set_attribute("points_per_second", str(LIDAR_POINTS_PER_SEC))
+    lidar_bp.set_attribute("rotation_frequency", str(LIDAR_HZ))
+    lidar_bp.set_attribute("sensor_tick", str(1.0 / LIDAR_HZ))
+
+    # mount: roof
+    lidar_tf = carla.Transform(carla.Location(x=0.0, z=2.2))
+
+    lidar = world.spawn_actor(lidar_bp, lidar_tf, attach_to=vehicle)
+    actors.append(lidar)
+    print("✅ LiDAR attached")
+
+    # -----------------------
+    # LiDAR callback storage
+    # -----------------------
+    lidar_buf = deque(maxlen=50)
+
+    def on_lidar(meas: carla.LidarMeasurement):
+        recv_wall = time.time()
+        point_count = len(meas)
+        lidar_buf.append((meas.frame, meas.timestamp, recv_wall, point_count))
+
+    lidar.listen(on_lidar)
+
+    # -----------------------
+    # Prepare CSV
+    # -----------------------
+    out_path = CSV_NAME
+    if os.path.exists(out_path):
+        base, ext = os.path.splitext(out_path)
+        out_path = f"{base}_{int(time.time())}{ext}"
+
+    fields = [
+        "t_wall_s",
+        "t_sim_s",
+        "loop_dt_s",
+        "vehicle_id",
+        "x", "y", "z",
+        "yaw_deg",
+        "speed_kmh",
+        "throttle", "steer", "brake",
+        "lidar_frame",
+        "lidar_sim_ts",
+        "lidar_recv_wall_s",
+        "lidar_point_count",
+        "lidar_age_wall_ms"
+    ]
+
+    print(f"📄 Logging to: {os.path.abspath(out_path)}")
+    print("Running... Press Ctrl+C to stop.")
+
+    last_loop = time.time()
+    t0 = last_loop
+
+    try:
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+
+            while True:
+                now = time.time()
+                t_wall = now - t0
+                if t_wall >= DURATION_S:
+                    break
+
+                loop_dt = now - last_loop
+                last_loop = now
+
+                # vehicle state
+                tf = vehicle.get_transform()
+                loc = tf.location
+                yaw = tf.rotation.yaw
+                v = vehicle.get_velocity()
+                spd = speed_kmh(v)
+
+                # keep camera following so you can always see the vehicle
+                if FOLLOW_CAMERA:
+                    follow_spectator(world, vehicle)
+
+                # simple speed hold (no steering)
+                err = TARGET_SPEED_KMH - spd
+                throttle = clamp(0.04 * err, 0.0, 0.6)
+                brake = 0.0
+                if err < -3.0:
+                    throttle = 0.0
+                    brake = clamp(0.02 * (-err), 0.0, 0.6)
+
+                ctrl = carla.VehicleControl(throttle=throttle, steer=0.0, brake=brake)
+                vehicle.apply_control(ctrl)
+
+                # latest lidar info
+                lidar_frame = None
+                lidar_sim_ts = None
+                lidar_recv_wall = None
+                lidar_pts = None
+                lidar_age_ms = None
+
+                if len(lidar_buf) > 0:
+                    lf, lsim, lwall, lpts = lidar_buf[-1]
+                    lidar_frame = lf
+                    lidar_sim_ts = lsim
+                    lidar_recv_wall = lwall
+                    lidar_pts = lpts
+                    lidar_age_ms = (now - lwall) * 1000.0
+
+                # sim time
+                snap = world.get_snapshot()
+                t_sim = snap.timestamp.elapsed_seconds
+
+                row = {
+                    "t_wall_s": round(t_wall, 3),
+                    "t_sim_s": round(t_sim, 3),
+                    "loop_dt_s": round(loop_dt, 4),
+                    "vehicle_id": vehicle.id,
+                    "x": round(loc.x, 3),
+                    "y": round(loc.y, 3),
+                    "z": round(loc.z, 3),
+                    "yaw_deg": round(yaw, 2),
+                    "speed_kmh": round(spd, 2),
+                    "throttle": round(throttle, 3),
+                    "steer": 0.0,
+                    "brake": round(brake, 3),
+                    "lidar_frame": lidar_frame,
+                    "lidar_sim_ts": lidar_sim_ts,
+                    "lidar_recv_wall_s": lidar_recv_wall,
+                    "lidar_point_count": lidar_pts,
+                    "lidar_age_wall_ms": round(lidar_age_ms, 2) if lidar_age_ms is not None else None
+                }
+
+                writer.writerow(row)
+
+                # status every ~5 seconds
+                if int(t_wall) % 5 == 0 and (t_wall - int(t_wall)) < (1.0 / CONTROL_HZ):
+                    if lidar_pts is None:
+                        print(f"t={t_wall:5.1f}s | speed={spd:5.1f} km/h | lidar waiting...")
+                    else:
+                        print(f"t={t_wall:5.1f}s | speed={spd:5.1f} km/h | lidar_pts={lidar_pts} | age_ms={lidar_age_ms:.1f}")
+
+                # loop pacing
+                time.sleep(max(0.0, (1.0 / CONTROL_HZ) - (time.time() - now)))
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+
+    finally:
+        try:
+            lidar.stop()
+        except Exception:
+            pass
+
+        print(f"Destroying {len(actors)} actors...")
+        for a in actors:
+            try:
+                a.destroy()
+            except Exception:
+                pass
+        print("✅ Cleaned up. Done.")
+
+if __name__ == "__main__":
+    main()
