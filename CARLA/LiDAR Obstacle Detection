@@ -6,12 +6,9 @@ import csv
 import os
 from collections import deque
 
-# =======================
-# USER SETTINGS (SAFE)
-# =======================
-DURATION_S = 60                 # run length
-CONTROL_HZ = 10                 # control/log loop rate
-TARGET_SPEED_KMH = 18           # keep low for stability
+DURATION_S = 60                 
+CONTROL_HZ = 10                 
+TARGET_SPEED_KMH = 18           
 CSV_NAME = "sil_lidar_benchmark.csv"
 
 # LiDAR settings (keep light to avoid crashes)
@@ -22,7 +19,6 @@ LIDAR_RANGE_M = 35.0
 
 # Visual follow (very light)
 FOLLOW_CAMERA = True
-# =======================
 
 def speed_kmh(v: carla.Vector3D) -> float:
     return math.sqrt(v.x*v.x + v.y*v.y + v.z*v.z) * 3.6
@@ -54,9 +50,7 @@ def main():
 
     actors = []
 
-    # -----------------------
-    # Spawn ego vehicle
-    # -----------------------
+
     vehicle_bp = bp.find("vehicle.tesla.model3")
     if vehicle_bp.has_attribute("color"):
         vehicle_bp.set_attribute(
@@ -83,9 +77,7 @@ def main():
     if FOLLOW_CAMERA:
         follow_spectator(world, vehicle)
 
-    # -----------------------
-    # Attach LiDAR
-    # -----------------------
+    
     lidar_bp = bp.find("sensor.lidar.ray_cast")
     lidar_bp.set_attribute("channels", str(LIDAR_CHANNELS))
     lidar_bp.set_attribute("range", str(LIDAR_RANGE_M))
@@ -100,9 +92,7 @@ def main():
     actors.append(lidar)
     print("✅ LiDAR attached")
 
-    # -----------------------
-    # LiDAR callback storage
-    # -----------------------
+    
     lidar_buf = deque(maxlen=50)
 
     def on_lidar(meas: carla.LidarMeasurement):
@@ -112,9 +102,6 @@ def main():
 
     lidar.listen(on_lidar)
 
-    # -----------------------
-    # Prepare CSV
-    # -----------------------
     out_path = CSV_NAME
     if os.path.exists(out_path):
         base, ext = os.path.splitext(out_path)
