@@ -31,6 +31,6 @@ Author
 
 Faysal Ahammed Tonmoy
 
-Electronic Engineering Student
+BSc, Electronic Engineering 
 
 Embedded Systems | Edge AI | Autonomous Systems
