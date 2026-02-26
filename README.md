@@ -29,6 +29,8 @@ The system will be progressively expanded with advanced perception and control a
 
 Author
 
-Faysal
+Faysal Ahammed Tonmoy
+
 Electronic Engineering Student
+
 Embedded Systems | Edge AI | Autonomous Systems
