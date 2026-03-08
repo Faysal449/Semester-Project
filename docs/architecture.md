@@ -20,3 +20,15 @@ Data Flow
 ----------
 CARLA Camera → Frame Preprocessing → TCP Transmission →
 Jetson Nano → Image Processing
+
+CARLA (Windows)
+      │
+      │ Camera Frames
+      ▼
+TCP Network
+      │
+      ▼
+Jetson Nano
+      │
+      ▼
+Image Processing / AI
