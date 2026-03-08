@@ -1,0 +1,21 @@
+# Current Progress
+
+Completed Features
+
+✔ CARLA simulator running on Windows
+✔ vehicle spawning
+✔ camera sensor integration
+✔ grayscale image processing
+✔ TCP communication with Jetson Nano
+✔ real-time frame streaming
+
+Current Frame Settings
+
+Resolution: 80 × 60
+FPS: 5
+
+Example Output
+
+Frame ok: (60, 80)
+Frame ok: (60, 80)
+Frame ok: (60, 80)
